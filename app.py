@@ -15,20 +15,33 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎯 權證智能評級雷達 V2.6")
-st.info("💡 已加入反爬蟲通行證，突破證交所海外 IP 封鎖！")
+st.title("🎯 權證智能評級雷達 V2.7")
+st.info("💡 已啟動自動跳板代理 (Proxy)，全面突破證交所海外 IP 封鎖！")
 
 REPUTABLE_ISSUERS = ["元大", "凱基", "國泰", "富邦", "統一", "台新", "玉山"]
-# 加上通行證，避免被證交所防火牆擋下
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_basic():
-    try:
-        r1 = requests.get("https://openapi.twse.com.tw/v1/opendata/t187ap37_L", headers=HEADERS, timeout=10).json()
-        r2 = requests.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap37_O", headers=HEADERS, timeout=10).json()
-        raw = (r1 if isinstance(r1, list) else []) + (r2 if isinstance(r2, list) else [])
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    # 雙重連線機制：若直連失敗，自動啟動 allorigins 代理跳板
+    def get_data(url):
+        try:
+            res = requests.get(url, headers=headers, timeout=5).json()
+            if isinstance(res, list): return res
+        except: pass
         
+        try:
+            res = requests.get(f"https://api.allorigins.win/raw?url={url}", timeout=10).json()
+            if isinstance(res, list): return res
+        except: pass
+        return []
+
+    r1 = get_data("https://openapi.twse.com.tw/v1/opendata/t187ap37_L") # 上市
+    r2 = get_data("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap37_O") # 上櫃
+    raw = r1 + r2
+    
+    try:
         res = []
         for d in raw:
             code = str(d.get("證券代號", d.get("權證代號", ""))).strip()
@@ -54,10 +67,10 @@ def fetch_basic():
 def get_mis(codes):
     if not codes: return {}
     res = {}
-    for i in range(0, len(codes), 50):
-        ex = "|".join(f"tse_{c}.tw" for c in codes[i:i+50]) + "|" + "|".join(f"otc_{c}.tw" for c in codes[i:i+50])
+    for i in range(0, len(codes), 40):
+        ex = "|".join(f"tse_{c}.tw" for c in codes[i:i+40]) + "|" + "|".join(f"otc_{c}.tw" for c in codes[i:i+40])
         try:
-            r = requests.get("https://mis.twse.com.tw/stock/api/getStockInfo.jsp", params={"ex_ch": ex}, headers=HEADERS, timeout=5).json()
+            r = requests.get("https://mis.twse.com.tw/stock/api/getStockInfo.jsp", params={"ex_ch": ex}, timeout=5).json()
             for d in r.get("msgArray", []):
                 z = d.get("z", "")
                 if z == "-" or not z: z = d.get("y", "0") 
@@ -72,7 +85,7 @@ t_type = "Put" if st.radio("權證方向", ["認購 (Call)", "認售 (Put)"], ho
 
 if st.button("🚀 開始智能評級"):
     q = query.strip().upper()
-    with st.spinner("突破封鎖，抓取全市場資料中..."):
+    with st.spinner("突破封鎖，抓取全市場資料與體檢中..."):
         df = fetch_basic()
         if df.empty: st.error("證交所基本資料庫連線失敗，請稍後再試"); st.stop()
         
@@ -90,7 +103,7 @@ if st.button("🚀 開始智能評級"):
         quotes = get_mis(targets + data["code"].tolist())
         
         spot = quotes.get(targets[0], {}).get("last", 0) if targets else 0
-        if spot <= 0: st.error("無法取得該標的之現價資訊，請確認是否為上市櫃股票"); st.stop()
+        if spot <= 0: st.error("無法取得該標的之即時現價資訊，請確認代碼是否正確"); st.stop()
         
         res = []
         for _, r in data.iterrows():
@@ -117,7 +130,7 @@ if st.button("🚀 開始智能評級"):
             })
             
         res_df = pd.DataFrame(res).sort_values(by=["score", "abs_m"], ascending=[False, True])
-        st.success(f"✅ 成功掃描 {len(res_df)} 檔權證 (現價基準: {spot})")
+        st.success(f"✅ 成功突破！共掃描出 {len(res_df)} 檔相關權證 (現價基準: {spot})")
         
         for idx, r in enumerate(res_df.head(15).to_dict('records'), 1):
             if r['score'] == 5: star, grade = "★★★★★", "S級 (完美標的)"
