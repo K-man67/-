@@ -4,9 +4,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="權證風控雷達 V2.2", page_icon="🎯", layout="centered")
+st.set_page_config(page_title="權證風控雷達 V2.3", page_icon="🎯", layout="centered")
 
-# 壓縮版高對比 CSS
 st.markdown("""
 <style>
 .stButton>button {width:100%; border-radius:8px; min-height:3em; background:#0d6efd; color:#fff; font-weight:bold; font-size:16px;}
@@ -15,23 +14,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎯 權證及格雷達 V2.2 (全天候版)")
-st.info("💡 全天候自動切換：盤中抓即時報價，盤後自動切換為靜態初篩，24小時皆可找標的！")
+st.title("🎯 權證及格雷達 V2.3 (全天候穩定版)")
+st.info("💡 證交所 API 欄位已自動相容，確保 2344 等標的能順利抓取！")
 
 REPUTABLE_ISSUERS = ["元大", "凱基", "國泰", "富邦", "統一", "台新"]
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_basic():
     try:
-        # 抓取證交所每日更新的靜態基本檔
         r = requests.get("https://openapi.twse.com.tw/v1/opendata/t187ap37_L", timeout=10).json()
+        # 修正證交所 API 欄位名稱不固定的地雷
         return pd.DataFrame([{
-            "code": d.get("權證代號",""), "name": d.get("權證名稱",""), 
-            "target": d.get("標的代號",""), "target_name": d.get("標的名稱",""),
-            "type": "Put" if "售" in d.get("權證型態","") else "Call",
-            "issuer": d.get("發行人",""), "strike": float(d.get("履約價", 0)),
-            "exp": d.get("到期日",""),
-            "out_ratio": float(d.get("最新權證數量",0))/float(d.get("發行時權證數量",1))*100
+            "code": d.get("權證代號", ""), 
+            "name": d.get("權證名稱", ""), 
+            "target": d.get("標的證券代號", d.get("標的代號", "")), 
+            "target_name": d.get("標的證券名稱", d.get("標的名稱", "")),
+            "type": "Put" if "售" in str(d.get("權證型態", d.get("權證類型", ""))) else "Call",
+            "issuer": d.get("發行人", d.get("發行機構名稱", "")), 
+            "strike": float(d.get("最新履約價格", d.get("履約價", 0))),
+            "exp": d.get("到期日", ""),
+            "out_ratio": float(d.get("最新權證數量", 0)) / float(d.get("發行時權證數量", 1)) * 100
         } for d in r if d.get("權證代號")])
     except: return pd.DataFrame()
 
@@ -42,15 +44,14 @@ def get_mis(codes):
         return {d["c"]: {"last": float(d.get("z", 0) or 0), "bid": float(str(d.get("b","0_")).split("_")[0] or 0), "ask": float(str(d.get("a","0_")).split("_")[0] or 0)} for d in r.get("msgArray", [])}
     except: return {}
 
-# UI 輸入區
 col1, col2 = st.columns([2, 1])
-with col1: query = st.text_input("股票代碼/名稱", value="2327", placeholder="例: 2327 或 國巨")
-with col2: manual_spot = st.number_input("盤後參考現價", value=550.0, step=1.0)
+with col1: query = st.text_input("股票代碼/名稱", value="2344", placeholder="例: 2344 或 華邦電")
+with col2: manual_spot = st.number_input("盤後參考現價", value=155.0, step=1.0)
 
 t_type = "Put" if st.radio("方向", ["認售 (Put)", "認購 (Call)"], horizontal=True).startswith("認售") else "Call"
 c1, c2 = st.columns(2)
 with c1: min_days = st.slider("最少剩餘天數", 30, 150, 60)
-with c2: max_spread = st.slider("盤中最大價差 %", 0.5, 5.0, 2.0, 0.5)
+with c2: max_spread = st.slider("盤中最大價差 %", 0.5, 5.0, 1.5, 0.5)
 
 if st.button("🚀 開始全天候篩選"):
     q = query.strip().upper()
@@ -60,14 +61,12 @@ if st.button("🚀 開始全天候篩選"):
         
         mask = (df["target"].eq(q) | df["target_name"].str.contains(q, na=False)) & df["type"].eq(t_type)
         data = df[mask].copy()
-        if data.empty: st.warning(f"查無標的【{query}】的上市權證"); st.stop()
+        if data.empty: st.warning(f"查無標的【{query}】的上市 {t_type} 權證 (可能皆已下市或輸入錯誤)"); st.stop()
         
-        # 換算真實剩餘天數
         today = date.today()
         data["days"] = data["exp"].apply(lambda x: (date(int(x[:3])+1911, int(x[3:5]), int(x[5:7])) - today).days if len(str(x))==7 else 0)
         data = data[data["days"] >= min_days] 
         
-        # 嘗試抓取即時報價 (若失敗則無縫切換盤後模式)
         targets = data["target"].unique().tolist()
         quotes = get_mis(targets + data["code"].tolist()[:25])
         
@@ -84,7 +83,6 @@ if st.button("🚀 開始全天候篩選"):
             ask = quotes.get(c, {}).get("ask", 0)
             spread = (ask - bid)/bid*100 if ask > bid > 0 else 0
             
-            # 硬性風控檢驗
             pass_hard = (r["issuer"] in REPUTABLE_ISSUERS) and (-5 <= m <= 10) and (r["out_ratio"] < 80)
             if is_live and bid > 0: pass_hard = pass_hard and (spread <= max_spread)
             
@@ -92,7 +90,7 @@ if st.button("🚀 開始全天候篩選"):
                 res.append({"code": c, "name": r["name"], "issuer": r["issuer"], "K": K, "days": r["days"], "m": m, "out": r["out_ratio"], "bid": bid, "ask": ask, "spread": spread, "abs_m": abs(m)})
                 
         if not res:
-            st.error("⚠️ 現存權證皆未通過硬性門檻（發行商非白名單 / 深度價外 / 流通比過高 / 價差過大）。")
+            st.error(f"⚠️ 標的 {query} 現存權證皆未通過硬性門檻（發行商非白名單 / 深度價外 / 流通比過高 / 價差過大）。")
             st.stop()
             
         res_df = pd.DataFrame(res).sort_values("abs_m") 
@@ -100,7 +98,6 @@ if st.button("🚀 開始全天候篩選"):
         
         for idx, r in enumerate(res_df.head(10).to_dict('records'), 1):
             badge = "👑 最佳首選" if idx == 1 else f"優選 #{idx}"
-            # 盤後自動隱藏無效的買賣報價
             live_info = f"<b>買/賣:</b> {r['bid']} / {r['ask']} (價差 {r['spread']:.2f}%)" if is_live and r['bid']>0 else "<b style='color:#ca8a04;'>狀態:</b> 盤後無報價 (系統已確認基本面及格，請於開盤確認委買賣單量)"
             
             st.markdown(f"""
